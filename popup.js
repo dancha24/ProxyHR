@@ -5,9 +5,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const enableBtn = document.getElementById('enableBtn');
     const disableBtn = document.getElementById('disableBtn');
     const status = document.getElementById('status');
+    const savedProxiesList = document.getElementById('savedProxiesList');
 
     // Загрузка текущего состояния
     loadCurrentStatus();
+    loadSavedProxies();
 
     // Обработчики событий
     enableBtn.addEventListener('click', enableProxy);
@@ -25,6 +27,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 updateStatus('disconnected');
             }
         });
+    }
+
+    // Функция обновления статуса после изменения
+    function refreshStatus() {
+        loadCurrentStatus();
     }
 
     // Функция обновления статуса
@@ -115,6 +122,10 @@ document.addEventListener('DOMContentLoaded', function() {
                             chrome.runtime.sendMessage({ action: 'enableProxy' }, (response3) => {
                                 if (response3 && response3.success) {
                                     updateStatus('connected');
+                                    // Сохраняем прокси в список при успешном запуске
+                                    saveProxyToList(proxy);
+                                    // Обновляем статус из background
+                                    setTimeout(refreshStatus, 500);
                                 } else {
                                     updateStatus('error');
                                 }
@@ -139,15 +150,145 @@ document.addEventListener('DOMContentLoaded', function() {
         chrome.runtime.sendMessage({ action: 'disableProxy' }, (response) => {
             if (response && response.success) {
                 updateStatus('disconnected');
+                // Обновляем статус из background
+                setTimeout(refreshStatus, 500);
             } else {
                 updateStatus('error');
             }
         });
     }
 
+    // ===== ФУНКЦИИ УПРАВЛЕНИЯ СПИСКОМ ПРОКСИ =====
 
+    // Загрузка сохраненных прокси
+    function loadSavedProxies() {
+        console.log('Загружаем сохраненные прокси...');
+        chrome.storage.local.get(['savedProxies'], (result) => {
+            const savedProxies = result.savedProxies || [];
+            console.log('Загружены прокси из storage:', savedProxies);
+            renderSavedProxiesList(savedProxies);
+        });
+    }
 
+    // Сохранение прокси в список
+    function saveProxyToList(proxy) {
+        console.log('Сохраняем прокси в список:', proxy);
+        chrome.storage.local.get(['savedProxies'], (result) => {
+            let savedProxies = result.savedProxies || [];
+            console.log('Текущие сохраненные прокси:', savedProxies);
+            
+            // Убираем дубликаты
+            savedProxies = savedProxies.filter(p => 
+                p.host !== proxy.host || p.port !== proxy.port
+            );
+            
+            // Добавляем новый прокси в начало (последний использованный)
+            savedProxies.unshift({
+                ...proxy,
+                timestamp: Date.now()
+            });
+            
+            console.log('Обновленный список прокси:', savedProxies);
+            
+            // Сохраняем в storage
+            chrome.storage.local.set({ savedProxies: savedProxies }, () => {
+                console.log('Прокси сохранен в storage');
+                renderSavedProxiesList(savedProxies);
+            });
+        });
+    }
 
+    // Удаление прокси из списка
+    function removeProxyFromList(proxyToRemove) {
+        if (confirm('Удалить этот прокси из списка?')) {
+            chrome.storage.local.get(['savedProxies'], (result) => {
+                let savedProxies = result.savedProxies || [];
+                savedProxies = savedProxies.filter(p => 
+                    p.host !== proxyToRemove.host || p.port !== proxyToRemove.port
+                );
+                
+                chrome.storage.local.set({ savedProxies: savedProxies }, () => {
+                    renderSavedProxiesList(savedProxies);
+                });
+            });
+        }
+    }
 
+    // Запуск прокси из списка
+    function launchProxyFromList(proxy) {
+        // Вставляем прокси в поле ввода
+        const proxyString = formatProxyString(proxy);
+        proxyInput.value = proxyString;
+        
+        // Автоматически запускаем
+        enableProxy();
+    }
+
+    // Форматирование прокси для отображения
+    function formatProxyString(proxy) {
+        if (proxy.username && proxy.password) {
+            return `${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`;
+        } else {
+            return `${proxy.host}:${proxy.port}`;
+        }
+    }
+
+    // Отрисовка списка сохраненных прокси
+    function renderSavedProxiesList(savedProxies) {
+        console.log('Отрисовываем список прокси:', savedProxies);
+        if (savedProxies.length === 0) {
+            savedProxiesList.innerHTML = '<div class="empty-list">Нет сохраненных прокси</div>';
+            console.log('Список пуст, показываем сообщение');
+            return;
+        }
+
+        savedProxiesList.innerHTML = savedProxies.map((proxy, index) => {
+            const proxyString = formatProxyString(proxy);
+            return `
+                <div class="proxy-item" data-proxy-index="${index}">
+                    <div class="proxy-info">${proxyString}</div>
+                    <div class="proxy-actions">
+                        <button class="proxy-btn btn-launch" title="Запустить" data-action="launch" data-proxy-index="${index}">
+                            ▶️
+                        </button>
+                        <button class="proxy-btn btn-delete" title="Удалить" data-action="delete" data-proxy-index="${index}">
+                            🗑️
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        // Добавляем обработчики событий для кнопок
+        addProxyButtonsEventListeners(savedProxies);
+        
+        console.log('Список прокси отрисован, элементов:', savedProxies.length);
+    }
+
+    // Добавление обработчиков событий для кнопок прокси
+    function addProxyButtonsEventListeners(savedProxies) {
+        const proxyButtons = savedProxiesList.querySelectorAll('.proxy-btn');
+        
+        proxyButtons.forEach(button => {
+            button.addEventListener('click', function(e) {
+                e.preventDefault();
+                
+                const action = this.getAttribute('data-action');
+                const proxyIndex = parseInt(this.getAttribute('data-proxy-index'));
+                const proxy = savedProxies[proxyIndex];
+                
+                if (!proxy) {
+                    console.error('Прокси не найден по индексу:', proxyIndex);
+                    return;
+                }
+                
+                if (action === 'launch') {
+                    launchProxyFromList(proxy);
+                } else if (action === 'delete') {
+                    removeProxyFromList(proxy);
+                }
+            });
+        });
+    }
 
 });
